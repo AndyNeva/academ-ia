@@ -5,13 +5,29 @@ import re
 VAULT_PATH = Path("D:/Obsidian/Proyectos/AcademicAI")
 INDEX_PATH = VAULT_PATH / ".obsidian" / "atomicas_index.json"
 
-def guardar_fuente(contenido: str, nombre: str) -> Path:
-    """Guarda el markdown crudo de MinerU en la carpeta Fuentes."""
-    carpeta = VAULT_PATH / "Fuentes"
-    
-    ruta = carpeta / f"{nombre}.md"
-    
-    # Agregar metadatos al inicio (frontmatter de Obsidian)
+# Referencia al WebSocket manager (se inyecta desde api.py)
+_ws_manager = None
+
+def set_ws_manager(manager):
+    """api.py llama esto al iniciar para inyectar el manager de WebSockets."""
+    global _ws_manager
+    _ws_manager = manager
+
+
+async def _enviar_nota(tipo: str, nombre: str, contenido: str, cliente_id: str):
+    """Envía la nota al plugin de Obsidian por WebSocket."""
+    if _ws_manager is None:
+        raise RuntimeError("WebSocket manager no configurado")
+    await _ws_manager.enviar(cliente_id, {
+        "tipo": tipo,
+        "nombre": nombre,
+        "contenido": contenido
+    })
+
+
+# ── Funciones públicas (ahora async) ──────────────────────────
+
+async def guardar_fuente(contenido: str, nombre: str, cliente_id: str):
     frontmatter = f"""---
 tipo: fuente-cruda
 origen: pdf
@@ -20,54 +36,29 @@ procesado: {__import__('datetime').date.today()}
 ---
 
 """
-    ruta.write_text(frontmatter + contenido, encoding="utf-8")
-    print(f"✅ Fuente guardada: {ruta}")
-    return ruta
+    await _enviar_nota("fuente", nombre, frontmatter + contenido, cliente_id)
+    print(f"✅ Fuente enviada: {nombre}")
 
 
-def guardar_literatura(contenido_llm: str, nombre: str, fuente: str) -> Path:
-    carpeta = VAULT_PATH / "Literatura"
-    carpeta.mkdir(parents=True, exist_ok=True)
-    
-    ruta = carpeta / f"{nombre}_lit.md"
+async def guardar_literatura(contenido_llm: str, nombre: str, fuente: str, cliente_id: str):
     footer = f"\n\n---\n📄 Fuente: [[Fuentes/{fuente}]]\n"
-    
-    ruta.write_text(contenido_llm + footer, encoding="utf-8")
-    print(f"✅ Literatura guardada: {ruta}")
-    return ruta
+    await _enviar_nota("literatura", f"{nombre}_lit", contenido_llm + footer, cliente_id)
+    print(f"✅ Literatura enviada: {nombre}")
 
 
-def guardar_atomica(contenido_llm: str, nombre: str, fuente: str) -> Path:
-    carpeta = VAULT_PATH / "Atomicas"
-    carpeta.mkdir(parents=True, exist_ok=True)
-    
-    # Nombre limpio para el archivo (sin caracteres problemáticos)
+async def guardar_atomica(contenido_llm: str, nombre: str, fuente: str, cliente_id: str):
     nombre_archivo = nombre.replace("/", "-").replace(":", "").strip()
-    ruta = carpeta / f"{nombre_archivo}.md"
     footer = f"\n\n---\n📄 Extraído de: [[Literatura/{fuente}_lit]]\n"
-    
-    ruta.write_text(contenido_llm + footer, encoding="utf-8")
-    
-    # Actualizar índice para deduplicación
+    await _enviar_nota("atomica", nombre_archivo, contenido_llm + footer, cliente_id)
     _actualizar_indice(nombre, contenido_llm)
-    
-    print(f"✅ Atómica guardada: {ruta}")
-    return ruta
+    print(f"✅ Atómica enviada: {nombre}")
 
 
-def guardar_moc(contenido_llm: str, materia: str, fuente: str) -> Path:
-    carpeta = VAULT_PATH / "MOCs"
-    carpeta.mkdir(parents=True, exist_ok=True)
-    
-    # El MOC se nombra por materia, no por documento
-    # Si ya existe, se sobreescribe (el LLM ya integró el contenido previo)
+async def guardar_moc(contenido_llm: str, materia: str, fuente: str, cliente_id: str):
     nombre_archivo = materia.replace("/", "-").replace(":", "").strip()
-    ruta = carpeta / f"MOC_{nombre_archivo}.md"
     footer = f"\n\n---\n📄 Última actualización desde: [[Literatura/{fuente}_lit]]\n"
-    
-    ruta.write_text(contenido_llm + footer, encoding="utf-8")
-    print(f"✅ MOC guardado: {ruta}")
-    return ruta
+    await _enviar_nota("moc", f"MOC_{nombre_archivo}", contenido_llm + footer, cliente_id)
+    print(f"✅ MOC enviado: {materia}")
 
 def _actualizar_indice(nombre: str, contenido: str) -> None:
     index = _get_indice()

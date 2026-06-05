@@ -248,7 +248,7 @@ Devuelve el JSON de decisiones."""
 # Orquestador principal
 # ─────────────────────────────────────────
 
-def process_document(raw_text: str, filename: str = "", materia: str = "") -> dict:
+async def process_document(raw_text: str, filename: str = "", materia: str = "", cliente_id: str = "") -> dict:
     """
     Orquesta el procesamiento completo de un documento.
     Llama a las tres funciones de guardado que recibe como parámetro.
@@ -256,10 +256,7 @@ def process_document(raw_text: str, filename: str = "", materia: str = "") -> di
     Args:
         raw_text:        Texto extraído del PDF o MD completo
         filename:        Nombre del archivo fuente
-        materia:         Materia o área temática (opcional, la IA la infiere)
-        save_literatura: fn(content: str, filename: str) → str (ruta guardada)
-        save_atomica:    fn(content: str, concept_name: str) → str
-        save_moc:        fn(content: str, materia: str) → str
+        cliente_id:      ID del cliente para enviar las notas al plugin de Obsidian
 
     Returns:
         dict con rutas de archivos creados
@@ -275,7 +272,7 @@ def process_document(raw_text: str, filename: str = "", materia: str = "") -> di
     print(f"[1/4] Generando nota de literatura para: {filename}")
     lit = generate_literatura(raw_text, filename)
     if guardar_literatura:
-        ruta = guardar_literatura(lit, filename, filename)
+        ruta = await guardar_literatura(lit, filename, filename, cliente_id)
         resultado["literatura"] = ruta
     else:
         resultado["literatura"] = lit
@@ -303,7 +300,7 @@ def process_document(raw_text: str, filename: str = "", materia: str = "") -> di
             print(f"      ✅ NUEVO: {nombre}")
             contenido = notas_por_nombre.get(nombre, "")
             if guardar_atomica and contenido:
-                ruta = guardar_atomica(contenido, nombre, filename)
+                ruta = await guardar_atomica(contenido, nombre, filename, cliente_id)
                 resultado["atomicas"].append(ruta)
 
         elif accion == "FUSIONAR":
@@ -319,14 +316,14 @@ def process_document(raw_text: str, filename: str = "", materia: str = "") -> di
             # Inyectar backlink adicional antes de guardar
             contenido = _inject_backlink(contenido, nota_existente)
             if guardar_atomica and contenido:
-                ruta = guardar_atomica(contenido, nombre, filename)
+                ruta = await guardar_atomica(contenido, nombre, filename, cliente_id)
                 resultado["atomicas"].append(ruta)
 
     # 4. MOC
     print(f"[4/4] Generando MOC...")
     moc = generate_moc(raw_text, filename, materia)
     if guardar_moc:
-        ruta = guardar_moc(moc, materia or filename, filename)
+        ruta = await guardar_moc(moc, filename, filename, cliente_id)
         resultado["moc"] = ruta
     else:
         resultado["moc"] = moc

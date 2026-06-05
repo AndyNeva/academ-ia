@@ -3,15 +3,18 @@ Ejemplos para probar la API de AcademIA
 Ejecuta: python test_api.py
 """
 
+import os
+
 import requests
 import json
 import asyncio
+import os
 import websockets
 from pathlib import Path
 
 BASE_URL = "http://localhost:8000"
 WS_URL = "ws://localhost:8000/ws"
-TOKEN = "token_secreto_academia_ia_2024"
+TOKEN = os.getenv("API_TOKEN")  # Asegúrate de tener un token válido en .env
 
 # ─────────────────────────────────────────
 # 1. Probar Health Check

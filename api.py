@@ -2,10 +2,10 @@ import os
 import json
 import asyncio
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict
 from datetime import datetime
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -13,8 +13,7 @@ import uvicorn
 # Importar funciones de tus scripts
 from src.pdf_extracter import extract_pdf
 from src.ai_processor import process_document
-from src.obsidian_exporter import guardar_fuente, guardar_literatura, guardar_atomica, guardar_moc
-
+from src.obsidian_exporter import guardar_fuente, guardar_literatura, guardar_atomica, guardar_moc, set_ws_manager
 load_dotenv()
 
 # ─────────────────────────────────────────
@@ -40,16 +39,34 @@ app.add_middleware(
 )
 
 # ─────────────────────────────────────────
-# Modelos de Datos
+# WebSocket Manager (por cliente_id)
 # ─────────────────────────────────────────
 
-class NotePayload:
-    """Estructura para recibir notas"""
-    def __init__(self, tipo: str, nombre: str, contenido: str, materia: Optional[str] = None):
-        self.tipo = tipo
-        self.nombre = nombre
-        self.contenido = contenido
-        self.materia = materia
+class ConnectionManager:
+    def __init__(self):
+        self.connections: Dict[str, WebSocket] = {}
+
+    async def connect(self, cliente_id: str, websocket: WebSocket):
+        await websocket.accept()
+        self.connections[cliente_id] = websocket
+        print(f"✅ Plugin conectado: {cliente_id}")
+
+    def disconnect(self, cliente_id: str):
+        self.connections.pop(cliente_id, None)
+        print(f"❌ Plugin desconectado: {cliente_id}")
+
+    async def enviar(self, cliente_id: str, payload: dict):
+        ws = self.connections.get(cliente_id)
+        if not ws:
+            raise RuntimeError(f"Plugin no conectado: {cliente_id}")
+        await ws.send_json(payload)
+        await asyncio.sleep(0.3)  # pausa para no saturar
+
+    def esta_conectado(self, cliente_id: str) -> bool:
+        return cliente_id in self.connections
+
+manager = ConnectionManager()
+set_ws_manager(manager)  # Inyectar el manager en obsidian_exporter
 
 # ─────────────────────────────────────────
 # Validación de Token
@@ -58,30 +75,6 @@ class NotePayload:
 def validar_token(token: str) -> bool:
     """Valida el token de autenticación"""
     return token == API_TOKEN
-
-# ─────────────────────────────────────────
-# WebSocket Manager
-# ─────────────────────────────────────────
-
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections = []
-    
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-    
-    async def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
-    
-    async def broadcast(self, message: dict):
-        for connection in self.active_connections:
-            try:
-                await connection.send_json(message)
-            except Exception as e:
-                print(f"Error broadcasting: {e}")
-
-manager = ConnectionManager()
 
 # ─────────────────────────────────────────
 # REST Endpoints
@@ -109,7 +102,8 @@ async def health_check():
 @app.post("/process_pdf", tags=["PDF"])
 async def process_pdf_endpoint(
     file: UploadFile = File(...),
-    token: str = None
+    token: str = Query(None),
+    cliente_id: str = Query(None)
 ):
     """
     Procesa un PDF completo:
@@ -121,17 +115,15 @@ async def process_pdf_endpoint(
     # Validar token
     if not token or not validar_token(token):
         raise HTTPException(status_code=401, detail="Token inválido")
-    
+    if not cliente_id:
+        raise HTTPException(status_code=400, detail="cliente_id requerido")
+
+    if not manager.esta_conectado(cliente_id):
+        raise HTTPException(status_code=400, detail="Plugin de Obsidian no conectado")
+
     try:
         # Guardar archivo temporal
         temp_path = Path("data/pdfs") / file.filename
-        temp_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        with open(temp_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
-        
-        # Procesar PDF
         nombre = temp_path.stem
         print(f"📄 Procesando PDF: {nombre}")
         
@@ -141,11 +133,11 @@ async def process_pdf_endpoint(
         
         # Paso 2: Guardar fuente
         print("2/3 Guardando fuente...")
-        guardar_fuente(contenido_crudo, nombre)
+        await guardar_fuente(contenido_crudo, nombre, cliente_id)
         
         # Paso 3: IA
         print("3/3 Procesando con IA...")
-        resultado_ia = process_document(contenido_crudo, filename=nombre)
+        resultado_ia = await process_document(contenido_crudo, filename=nombre, cliente_id=cliente_id)
         
         return {
             "status": "success",
@@ -158,139 +150,50 @@ async def process_pdf_endpoint(
         print(f"❌ Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/save_note", tags=["Notes"])
-async def save_note_endpoint(
-    tipo: str,
-    nombre: str,
-    contenido: str,
-    materia: Optional[str] = None,
-    token: str = None
-):
-    """
-    Guarda una nota directamente en Obsidian.
-    tipos: "literatura", "atomica", "moc"
-    """
-    # Validar token
-    if not token or not validar_token(token):
-        raise HTTPException(status_code=401, detail="Token inválido")
-    
-    try:
-        if tipo.lower() == "literatura":
-            guardar_literatura(contenido, nombre, materia or "General")
-        elif tipo.lower() == "atomica":
-            guardar_atomica(contenido, nombre, materia or "General")
-        elif tipo.lower() == "moc":
-            guardar_moc(contenido, nombre, materia or "General")
-        else:
-            raise ValueError(f"Tipo de nota inválido: {tipo}")
-        
-        return {
-            "status": "success",
-            "tipo": tipo,
-            "nombre": nombre,
-            "mensaje": "Nota guardada correctamente"
-        }
-    
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 # ─────────────────────────────────────────
 # WebSocket Endpoint
 # ─────────────────────────────────────────
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """
-    WebSocket para comunicación con Obsidian plugin.
-    
-    Flujo:
-    1. Cliente envía: {"type": "auth", "token": "..."}
-    2. Servidor valida y responde: {"type": "auth", "success": true/false}
-    3. Cliente envía notas: {"tipo": "...", "nombre": "...", "contenido": "...", "materia": "..."}
-    4. Servidor procesa y responde: {"ok": true/false, "nombre": "...", "error": "..."}
-    """
-    await manager.connect(websocket)
-    authenticated = False
-    
+    await websocket.accept()
+    cliente_id = None
+
     try:
         while True:
             data = await websocket.receive_json()
-            
-            # Mensaje de autenticación
+
             if data.get("type") == "auth":
                 token = data.get("token")
+                user_id = data.get("user_id", str(id(websocket)))
+
                 if validar_token(token):
-                    authenticated = True
+                    cliente_id = user_id
+                    manager.connections[cliente_id] = websocket
                     await websocket.send_json({
                         "type": "auth",
                         "success": True,
-                        "mensaje": "Autenticación exitosa"
+                        "cliente_id": cliente_id
                     })
-                    print(f"✅ WebSocket autenticado")
+                    print(f"✅ Autenticado: {cliente_id}")
                 else:
                     await websocket.send_json({
                         "type": "auth",
                         "success": False,
                         "error": "Token inválido"
                     })
-                    await websocket.close(code=1008)
-            
-            # Procesar notas solo si está autenticado
-            elif authenticated:
-                try:
-                    tipo = data.get("tipo")
-                    nombre = data.get("nombre")
-                    contenido = data.get("contenido")
-                    materia = data.get("materia", "General")
-                    
-                    # Validar datos
-                    if not all([tipo, nombre, contenido]):
-                        await websocket.send_json({
-                            "ok": False,
-                            "error": "Faltan campos requeridos: tipo, nombre, contenido"
-                        })
-                        continue
-                    
-                    # Guardar nota
-                    if tipo.lower() == "literatura":
-                        guardar_literatura(contenido, nombre, materia)
-                    elif tipo.lower() == "atomica":
-                        guardar_atomica(contenido, nombre, materia)
-                    elif tipo.lower() == "moc":
-                        guardar_moc(contenido, nombre, materia)
-                    else:
-                        raise ValueError(f"Tipo inválido: {tipo}")
-                    
-                    print(f"✅ Nota guardada: {tipo} - {nombre}")
-                    
-                    # Confirmar al cliente
-                    await websocket.send_json({
-                        "ok": True,
-                        "nombre": nombre,
-                        "tipo": tipo,
-                        "mensaje": "Nota guardada exitosamente"
-                    })
-                
-                except Exception as e:
-                    print(f"❌ Error al guardar nota: {e}")
-                    await websocket.send_json({
-                        "ok": False,
-                        "error": str(e)
-                    })
-            
-            else:
-                await websocket.send_json({
-                    "ok": False,
-                    "error": "No autenticado. Envía tu token primero."
-                })
-    
+
+            # El plugin confirma recepción de notas
+            elif data.get("ok") is not None:
+                print(f"Plugin confirmó: {data.get('nombre')}")
+
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
-        print("❌ WebSocket desconectado")
+        if cliente_id:
+            manager.disconnect(cliente_id)
     except Exception as e:
         print(f"❌ Error WebSocket: {e}")
-        manager.disconnect(websocket)
+        if cliente_id:
+            manager.disconnect(cliente_id)
 
 # ─────────────────────────────────────────
 # Lanzar servidor
