@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 import time
 import requests
 from pathlib import Path
-from markdown_cleaner import limpiar_markdown
+from src.markdown_cleaner import limpiar_markdown
 
 load_dotenv()
 MINERU_TOKEN = os.getenv("MINERU_API_KEY")
