@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  academia-api:
+    build: .
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      - API_TOKEN=${API_TOKEN}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - DEBUG=${DEBUG:-False}
+      - PORT=8000
+    volumes:
+      - ./data:/app/data
+      - ./markdowns:/app/markdowns
+      - ./Obsidian_Vault:/app/Obsidian_Vault
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+# Uso:
+# docker-compose up --build
+# docker-compose down
