@@ -8,12 +8,12 @@ from src.markdown_cleaner import limpiar_markdown
 load_dotenv()
 MINERU_TOKEN = os.getenv("MINERU_API_KEY")
 BASE_URL = "https://mineru.net/api/v4"
-HEADERS = {
-    "Content-Type": "application/json",
-    "Authorization": f"Bearer {MINERU_TOKEN}"
-}
+def _get_headers():
+    return {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {os.getenv('MINERU_API_KEY')}"
+    }
 
-print(repr(os.getenv("MINERU_API_KEY")))
 def extract_pdf(ruta_pdf: str) -> str:
     """
     Extrae el contenido de un PDF a Markdown usando la API v4 de MinerU.
@@ -33,7 +33,7 @@ def extract_pdf_from_bytes(pdf_bytes: bytes, filename: str) -> str:
     # 1. Pedir URL firmada de subida
     resp = requests.post(
         f"{BASE_URL}/file-urls/batch",
-        headers=HEADERS,
+        headers=_get_headers(),
         json={
             "files": [{"name": filename, "data_id": filename}],
             "model_version": "vlm",
@@ -75,7 +75,7 @@ def _poll_batch(batch_id: str, timeout: int = 300, interval: int = 5) -> str:
     while time.time() - inicio < timeout:
         resp = requests.get(
             f"{BASE_URL}/extract-results/batch/{batch_id}",
-            headers=HEADERS
+            headers=_get_headers()
         )
         resp.raise_for_status()
         resultados = resp.json()["data"]["extract_result"]

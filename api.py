@@ -125,6 +125,11 @@ async def process_pdf_endpoint(
         # Guardar archivo temporal
         temp_path = Path("data/pdfs") / file.filename
         nombre = temp_path.stem
+        temp_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(temp_path, "wb") as buffer:
+            buffer.write(await file.read())
+
         print(f"📄 Procesando PDF: {nombre}")
         
         # Paso 1: Extraer
@@ -154,6 +159,7 @@ async def process_pdf_endpoint(
 # WebSocket Endpoint
 # ─────────────────────────────────────────
 
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -173,7 +179,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({
                         "type": "auth",
                         "success": True,
-                        "cliente_id": cliente_id
+                        "cliente_id": cliente_id,
+                        "mensaje": f"Conectado como {cliente_id}"
                     })
                     print(f"✅ Autenticado: {cliente_id}")
                 else:
@@ -182,10 +189,17 @@ async def websocket_endpoint(websocket: WebSocket):
                         "success": False,
                         "error": "Token inválido"
                     })
+                    print("❌ Intento de auth con token inválido")
+                    await websocket.close(code=1008, reason="Token inválido")
+                    break
 
             # El plugin confirma recepción de notas
             elif data.get("ok") is not None:
-                print(f"Plugin confirmó: {data.get('nombre')}")
+                nota_nombre = data.get("nombre", "")
+                print(f"✅ Plugin confirmó: {nota_nombre}")
+
+            else:
+                print(f"⚠️  Mensaje desconocido del plugin: {data}")
 
     except WebSocketDisconnect:
         if cliente_id:

@@ -3,7 +3,7 @@ import json
 import re
 
 VAULT_PATH = Path("D:/Obsidian/Proyectos/AcademicAI")
-INDEX_PATH = VAULT_PATH / ".obsidian" / "atomicas_index.json"
+INDEX_PATH = Path(".obsidian") / "atomicas_index.json"
 
 # Referencia al WebSocket manager (se inyecta desde api.py)
 _ws_manager = None
@@ -63,40 +63,23 @@ async def guardar_moc(contenido_llm: str, materia: str, fuente: str, cliente_id:
 def _actualizar_indice(nombre: str, contenido: str) -> None:
     index = _get_indice()
     aliases = _extraer_aliases(contenido)
-    # Evitar duplicados en el propio índice
     if not any(n["nombre"] == nombre for n in index):
         index.append({"nombre": nombre, "aliases": aliases})
+        INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)  # crea .obsidian/ si no existe
         INDEX_PATH.write_text(
-            json.dumps(index, ensure_ascii=False, indent=2), 
+            json.dumps(index, ensure_ascii=False, indent=2),
             encoding="utf-8"
         )
 
 def _get_indice() -> list[dict]:
     if not INDEX_PATH.exists():
         return []
-    return json.loads(INDEX_PATH.read_text())
+    return json.loads(INDEX_PATH.read_text(encoding="utf-8"))
 
 def get_notas_existentes() -> list[dict]:
-    index = _get_indice()
-    
-    # Filtrar las que realmente existen en el vault
-    validas = []
-    for nota in index:
-        nombre_archivo = nota["nombre"].replace("/", "-").replace(":", "").strip()
-        ruta = VAULT_PATH / "Atomicas" / f"{nombre_archivo}.md"
-        if ruta.exists():
-            validas.append(nota)
-    
-    # Si hubo borrados, actualizar el índice
-    if len(validas) < len(index):
-        eliminadas = len(index) - len(validas)
-        print(f"🧹 Índice limpiado: {eliminadas} notas eliminadas del registro")
-        INDEX_PATH.write_text(
-            json.dumps(validas, ensure_ascii=False, indent=2),
-            encoding="utf-8"
-        )
-    
-    return validas
+    # En Railway no hay vault local así que solo devuelve el índice en memoria
+    # sin validar si el archivo existe en disco
+    return _get_indice()
 
 
 def _extraer_aliases(contenido: str) -> list[str]:
