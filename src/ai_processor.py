@@ -162,24 +162,16 @@ Responde ÚNICAMENTE en JSON con esta estructura:
 # ─────────────────────────────────────────
 
 def _call_ai(system: str, user: str, max_tokens: int = 8096) -> str:
-    """Intenta los modelos en orden hasta que uno funcione."""
-    last_error = None
-    for model in MODELS:
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user",   "content": user}
-                ],
-                max_tokens=max_tokens
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            print(f"⚠️ Modelo {model} falló: {e}")
-            last_error = e
-            continue
-    raise RuntimeError(f"Todos los modelos fallaron. Último error: {last_error}")
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user",   "content": user}
+        ],
+        max_tokens=max_tokens
+    )
+    return response.choices[0].message.content
+
 
 # ─────────────────────────────────────────
 # Generadores por tipo de nota
