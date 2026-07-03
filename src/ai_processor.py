@@ -12,7 +12,7 @@ client = OpenAI(
 )
 
 # Modelos en orden de preferencia — si el primero falla por rate limit, prueba el siguiente
-MODEL = "google/gemma-4-31b-it:free"
+MODEL = "deepseek/deepseek-v4-pro"
 
 # ─────────────────────────────────────────
 # SYSTEM PROMPTS
