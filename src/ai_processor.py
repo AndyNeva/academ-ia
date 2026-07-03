@@ -12,12 +12,7 @@ client = OpenAI(
 )
 
 # Modelos en orden de preferencia — si el primero falla por rate limit, prueba el siguiente
-MODELS = [
-    "google/gemma-4-31b-it:free",
-    "qwen/qwen3-8b:free",
-    "meta-llama/llama-3.3-8b-instruct:free",
-    "mistralai/mistral-7b-instruct:free",
-]
+MODEL = "google/gemma-4-31b-it:free"
 
 # ─────────────────────────────────────────
 # SYSTEM PROMPTS
