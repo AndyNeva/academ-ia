@@ -10,10 +10,12 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
-# Importar funciones de tus scripts
-from src.pdf_extracter import extract_pdf
+from src.pdf_extracter import extract_pdf_from_bytes
 from src.ai_processor import process_document
-from src.obsidian_exporter import guardar_fuente, guardar_literatura, guardar_atomica, guardar_moc, set_ws_manager
+from src.obsidian_exporter import (
+    guardar_fuente, set_ws_manager, init_db, eliminar_del_indice
+)
+
 load_dotenv()
 
 # ─────────────────────────────────────────
@@ -29,7 +31,6 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS configuración
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -60,43 +61,49 @@ class ConnectionManager:
         if not ws:
             raise RuntimeError(f"Plugin no conectado: {cliente_id}")
         await ws.send_json(payload)
-        await asyncio.sleep(0.3)  # pausa para no saturar
+        await asyncio.sleep(0.3)
 
     def esta_conectado(self, cliente_id: str) -> bool:
         return cliente_id in self.connections
 
+
 manager = ConnectionManager()
-set_ws_manager(manager)  # Inyectar el manager en obsidian_exporter
+set_ws_manager(manager)
+
+# ─────────────────────────────────────────
+# Inicializar BD al arrancar
+# ─────────────────────────────────────────
+
+@app.on_event("startup")
+async def startup():
+    init_db()
+    print("🚀 AcademIA API lista")
 
 # ─────────────────────────────────────────
 # Validación de Token
 # ─────────────────────────────────────────
 
 def validar_token(token: str) -> bool:
-    """Valida el token de autenticación"""
     return token == API_TOKEN
 
 # ─────────────────────────────────────────
-# REST Endpoints
+# Endpoints
 # ─────────────────────────────────────────
 
 @app.get("/", tags=["Info"])
 async def root():
-    """Información de la API"""
     return {
         "nombre": "AcademIA API",
-        "descripcion": "API para procesar PDFs y generar notas en Obsidian",
+        "version": "1.0.0",
         "endpoints": {
             "health": "GET /health",
             "process_pdf": "POST /process_pdf",
-            "save_note": "POST /save_note",
             "websocket": "WS /ws"
         }
     }
 
 @app.get("/health", tags=["Info"])
 async def health_check():
-    """Verifica que la API esté funcionando"""
     return {"status": "ok", "timestamp": datetime.now().isoformat()}
 
 @app.post("/process_pdf", tags=["PDF"])
@@ -107,14 +114,15 @@ async def process_pdf_endpoint(
 ):
     """
     Procesa un PDF completo:
-    1. Extrae contenido con MinerU
+    1. Extrae contenido con MinerU API
     2. Genera nota de literatura con IA
-    3. Genera notas atómicas
-    4. Genera MOCs
+    3. Genera notas atómicas con deduplicación
+    4. Genera MOC
+    Todo se envía al plugin de Obsidian por WebSocket.
     """
-    # Validar token
     if not token or not validar_token(token):
         raise HTTPException(status_code=401, detail="Token inválido")
+
     if not cliente_id:
         raise HTTPException(status_code=400, detail="cliente_id requerido")
 
@@ -122,43 +130,41 @@ async def process_pdf_endpoint(
         raise HTTPException(status_code=400, detail="Plugin de Obsidian no conectado")
 
     try:
-        # Guardar archivo temporal
-        temp_path = Path("data/pdfs") / file.filename
-        nombre = temp_path.stem
-        temp_path.parent.mkdir(parents=True, exist_ok=True)
+        pdf_bytes = await file.read()
+        nombre = Path(file.filename).stem
+        print(f"📄 Procesando PDF: {nombre} (usuario: {cliente_id})")
 
-        with open(temp_path, "wb") as buffer:
-            buffer.write(await file.read())
+        # 1. Extraer con MinerU API (sin guardar en disco)
+        print("1/4 Extrayendo con MinerU...")
+        contenido_crudo = extract_pdf_from_bytes(pdf_bytes, file.filename)
 
-        print(f"📄 Procesando PDF: {nombre}")
-        
-        # Paso 1: Extraer
-        print("1/3 Extrayendo con MinerU...")
-        contenido_crudo = extract_pdf(str(temp_path))
-        
-        # Paso 2: Guardar fuente
-        print("2/3 Guardando fuente...")
+        # 2. Guardar fuente raw en Obsidian
+        print("2/4 Guardando fuente...")
         await guardar_fuente(contenido_crudo, nombre, cliente_id)
-        
-        # Paso 3: IA
-        print("3/3 Procesando con IA...")
-        resultado_ia = await process_document(contenido_crudo, filename=nombre, cliente_id=cliente_id)
-        
+
+        # 3. Procesar con IA + deduplicación + enviar notas
+        print("3/4 Procesando con IA...")
+        resultado_ia = await process_document(
+            contenido_crudo,
+            filename=nombre,
+            cliente_id=cliente_id
+        )
+
+        print("4/4 ✅ Completado")
         return {
             "status": "success",
             "nombre": nombre,
             "mensaje": "PDF procesado correctamente",
             "resultado": resultado_ia
         }
-    
+
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"❌ Error procesando PDF: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ─────────────────────────────────────────
-# WebSocket Endpoint
+# WebSocket
 # ─────────────────────────────────────────
-
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -169,12 +175,21 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             data = await websocket.receive_json()
 
+            # ── Autenticación ──────────────────────────
             if data.get("type") == "auth":
                 token = data.get("token")
-                user_id = data.get("user_id", str(id(websocket)))
+                user_id = data.get("user_id")
+
+                if not user_id:
+                    await websocket.send_json({
+                        "type": "auth",
+                        "success": False,
+                        "error": "user_id requerido"
+                    })
+                    continue
 
                 if validar_token(token):
-                    cliente_id = user_id
+                    cliente_id = str(user_id)
                     manager.connections[cliente_id] = websocket
                     await websocket.send_json({
                         "type": "auth",
@@ -189,17 +204,23 @@ async def websocket_endpoint(websocket: WebSocket):
                         "success": False,
                         "error": "Token inválido"
                     })
-                    print("❌ Intento de auth con token inválido")
                     await websocket.close(code=1008, reason="Token inválido")
                     break
 
-            # El plugin confirma recepción de notas
+            # ── Borrado de nota atómica ────────────────
+            elif data.get("type") == "delete_atomica":
+                if cliente_id:
+                    nombre = data.get("nombre", "")
+                    eliminar_del_indice(nombre, cliente_id)
+                    print(f"🗑️ Borrado notificado: {nombre} (usuario: {cliente_id})")
+
+            # ── Confirmación de nota guardada ──────────
             elif data.get("ok") is not None:
                 nota_nombre = data.get("nombre", "")
                 print(f"✅ Plugin confirmó: {nota_nombre}")
 
             else:
-                print(f"⚠️  Mensaje desconocido del plugin: {data}")
+                print(f"⚠️ Mensaje desconocido: {data}")
 
     except WebSocketDisconnect:
         if cliente_id:
@@ -210,18 +231,10 @@ async def websocket_endpoint(websocket: WebSocket):
             manager.disconnect(cliente_id)
 
 # ─────────────────────────────────────────
-# Lanzar servidor
+# Main
 # ─────────────────────────────────────────
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     print(f"\n🚀 Iniciando API en http://localhost:{port}")
-    print(f"📚 Documentación: http://localhost:{port}/docs")
-    print(f"🔐 Token: {API_TOKEN}")
-    
-    uvicorn.run(
-        "api:app",
-        host="0.0.0.0",
-        port=port,
-        reload=DEBUG
-    )
+    uvicorn.run("api:app", host="0.0.0.0", port=port, reload=DEBUG)
