@@ -11,10 +11,16 @@ client = OpenAI(
     base_url="https://openrouter.ai/api/v1"
 )
 
-MODEL = "google/gemma-4-31b-it:free"
+# Modelos en orden de preferencia — si el primero falla por rate limit, prueba el siguiente
+MODELS = [
+    "google/gemma-3-27b-it:free",
+    "qwen/qwen3-8b:free",
+    "meta-llama/llama-3.3-8b-instruct:free",
+    "mistralai/mistral-7b-instruct:free",
+]
 
 # ─────────────────────────────────────────
-# SYSTEM PROMPTS por tipo de nota
+# SYSTEM PROMPTS
 # ─────────────────────────────────────────
 
 PROMPT_LITERATURA = """
@@ -142,8 +148,8 @@ Se te dará:
 
 Tu tarea es decidir para cada concepto nuevo:
 - NUEVO: no existe nada similar → se crea nota nueva
-- FUSIONAR con [[Nota existente]]: es el mismo concepto con otro nombre → no se crea, se añade alias
-- RELACIONAR con [[Nota existente]]: es un concepto distinto pero muy cercano → se crea nuevo con backlink
+- FUSIONAR con [[Nota existente]]: es el mismo concepto con otro nombre → no se crea
+- RELACIONAR con [[Nota existente]]: es un concepto distinto pero muy cercano → se crea con backlink
 
 Responde ÚNICAMENTE en JSON con esta estructura:
 [
@@ -157,19 +163,28 @@ Responde ÚNICAMENTE en JSON con esta estructura:
 """
 
 # ─────────────────────────────────────────
-# Helper central
+# Helper central con fallback de modelos
 # ─────────────────────────────────────────
 
 def _call_ai(system: str, user: str, max_tokens: int = 8096) -> str:
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user",   "content": user}
-        ],
-        max_tokens=max_tokens
-    )
-    return response.choices[0].message.content
+    """Intenta los modelos en orden hasta que uno funcione."""
+    last_error = None
+    for model in MODELS:
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user",   "content": user}
+                ],
+                max_tokens=max_tokens
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            print(f"⚠️ Modelo {model} falló: {e}")
+            last_error = e
+            continue
+    raise RuntimeError(f"Todos los modelos fallaron. Último error: {last_error}")
 
 # ─────────────────────────────────────────
 # Generadores por tipo de nota
@@ -185,14 +200,12 @@ def generate_literatura(raw_text: str, filename: str = "") -> str:
 
 
 def generate_atomicas(raw_text: str, filename: str = "") -> list[str]:
-    """Devuelve una lista de notas atómicas, una por concepto."""
     user_prompt = f"""Genera las notas atómicas para el documento: {filename}
 
 --- TEXTO EXTRAÍDO ---
 {raw_text}
 --- FIN DEL TEXTO ---"""
     result = _call_ai(PROMPT_ATOMICA, user_prompt)
-    # Separar en notas individuales
     notas = [n.strip() for n in result.split("===NOTA===") if n.strip()]
     return notas
 
@@ -206,28 +219,18 @@ Documento fuente: {filename}
 --- FIN DEL TEXTO ---"""
     return _call_ai(PROMPT_MOC, user_prompt)
 
+
 def resolver_duplicados(conceptos_nuevos: list[str], notas_existentes: list[dict]) -> list[dict]:
-    """
-    Decide si cada concepto nuevo es duplicado, alias o concepto distinto.
-    
-    Args:
-        conceptos_nuevos:  títulos extraídos de las notas atómicas nuevas
-        notas_existentes:  índice de notas ya guardadas en Obsidian
-    
-    Returns:
-        lista de decisiones por concepto
-    """
     if not notas_existentes:
-        return [{"concepto_nuevo": c, "accion": "NUEVO", 
+        return [{"concepto_nuevo": c, "accion": "NUEVO",
                  "nota_existente": None, "alias_sugerido": None}
                 for c in conceptos_nuevos]
 
     existentes_txt = "\n".join(
-        f"- {n['nombre']}" + (f" (aliases: {', '.join(n['aliases'])})" 
+        f"- {n['nombre']}" + (f" (aliases: {', '.join(n['aliases'])})"
                                if n.get('aliases') else "")
         for n in notas_existentes
     )
-
     nuevos_txt = "\n".join(f"- {c}" for c in conceptos_nuevos)
 
     user_prompt = f"""NOTAS EXISTENTES:
@@ -239,8 +242,6 @@ CONCEPTOS NUEVOS A EVALUAR:
 Devuelve el JSON de decisiones."""
 
     raw = _call_ai(PROMPT_RESOLVER_DUPLICADOS, user_prompt, max_tokens=2048)
-    
-    # Limpiar posibles ```json ... ``` que el modelo añada
     clean = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     return json.loads(clean)
 
@@ -248,48 +249,54 @@ Devuelve el JSON de decisiones."""
 # Orquestador principal
 # ─────────────────────────────────────────
 
-async def process_document(raw_text: str, filename: str = "", materia: str = "", cliente_id: str = "") -> dict:
+async def process_document(
+    raw_text: str,
+    filename: str = "",
+    materia: str = "",
+    cliente_id: str = "",
+    destino: str = "obsidian"  # "obsidian" | "pdf"
+) -> dict:
     """
     Orquesta el procesamiento completo de un documento.
-    Llama a las tres funciones de guardado que recibe como parámetro.
 
     Args:
-        raw_text:        Texto extraído del PDF o MD completo
-        filename:        Nombre del archivo fuente
-        cliente_id:      ID del cliente para enviar las notas al plugin de Obsidian
+        raw_text:   Texto extraído del documento
+        filename:   Nombre del archivo fuente
+        materia:    Materia opcional (la IA la infiere si no se da)
+        cliente_id: ID de Telegram del usuario
+        destino:    "obsidian" envía por WebSocket | "pdf" devuelve contenido
 
     Returns:
-        dict con rutas de archivos creados
+        dict con resultado. Si destino="pdf" incluye bytes del PDF en "pdf_bytes".
     """
     resultado = {
-    "literatura": None,
-    "atomicas": [],
-    "fusiones": [],
-    "moc": None
-}
+        "literatura": None,
+        "atomicas": [],
+        "fusiones": [],
+        "moc": None,
+        "pdf_bytes": None
+    }
 
-     # 1. Nota de literatura
+    # 1. Nota de literatura
     print(f"[1/4] Generando nota de literatura para: {filename}")
     lit = generate_literatura(raw_text, filename)
-    if guardar_literatura:
-        ruta = await guardar_literatura(lit, filename, filename, cliente_id)
-        resultado["literatura"] = ruta
-    else:
-        resultado["literatura"] = lit
+    resultado["literatura"] = lit
+
+    if destino == "obsidian":
+        await guardar_literatura(lit, filename, filename, cliente_id)
 
     # 2. Generar atómicas candidatas
     print(f"[2/4] Generando notas atómicas...")
     atomicas = generate_atomicas(raw_text, filename)
     conceptos_nuevos = [_extract_title(n) for n in atomicas]
     print(f"→ {len(atomicas)} candidatas generadas")
-    
-    # 3. Resolver duplicados contra las existentes
-    print(f"[3/4] Resolviendo duplicados semánticos...")
-    notas_existentes = get_notas_existentes() if get_notas_existentes else []
-    decisiones = resolver_duplicados(conceptos_nuevos, notas_existentes)
 
-    # Mapear nombre → contenido completo de la nota generada
+    # 3. Resolver duplicados
+    print(f"[3/4] Resolviendo duplicados semánticos...")
+    notas_existentes = get_notas_existentes(cliente_id)
+    decisiones = resolver_duplicados(conceptos_nuevos, notas_existentes)
     notas_por_nombre = {_extract_title(n): n for n in atomicas}
+    atomicas_guardadas = []
 
     for decision in decisiones:
         nombre = decision["concepto_nuevo"]
@@ -299,47 +306,61 @@ async def process_document(raw_text: str, filename: str = "", materia: str = "",
         if accion == "NUEVO":
             print(f"      ✅ NUEVO: {nombre}")
             contenido = notas_por_nombre.get(nombre, "")
-            if guardar_atomica and contenido:
-                ruta = await guardar_atomica(contenido, nombre, filename, cliente_id)
-                resultado["atomicas"].append(ruta)
+            if contenido:
+                atomicas_guardadas.append(contenido)
+                resultado["atomicas"].append(nombre)
+                if destino == "obsidian":
+                    await guardar_atomica(contenido, nombre, filename, cliente_id)
 
         elif accion == "FUSIONAR":
-            print(f"      🔀 FUSIONAR: '{nombre}' → alias de [[{nota_existente}]]")
+            print(f"      🔀 FUSIONAR: '{nombre}' → [[{nota_existente}]]")
             resultado["fusiones"].append({
-            "concepto_descartado": nombre,
-            "usar_en_su_lugar": nota_existente,
-             })
+                "concepto_descartado": nombre,
+                "usar_en_su_lugar": nota_existente,
+            })
 
         elif accion == "RELACIONAR":
             print(f"      🔗 RELACIONAR: '{nombre}' → backlink a [[{nota_existente}]]")
             contenido = notas_por_nombre.get(nombre, "")
-            # Inyectar backlink adicional antes de guardar
             contenido = _inject_backlink(contenido, nota_existente)
-            if guardar_atomica and contenido:
-                ruta = await guardar_atomica(contenido, nombre, filename, cliente_id)
-                resultado["atomicas"].append(ruta)
+            if contenido:
+                atomicas_guardadas.append(contenido)
+                resultado["atomicas"].append(nombre)
+                if destino == "obsidian":
+                    await guardar_atomica(contenido, nombre, filename, cliente_id)
 
     # 4. MOC
     print(f"[4/4] Generando MOC...")
     moc = generate_moc(raw_text, filename, materia)
-    if guardar_moc:
-        ruta = await guardar_moc(moc, filename, filename, cliente_id)
-        resultado["moc"] = ruta
-    else:
-        resultado["moc"] = moc
+    resultado["moc"] = moc
+
+    if destino == "obsidian":
+        await guardar_moc(moc, filename, filename, cliente_id)
+
+    # 5. Si destino es PDF, generar el archivo
+    elif destino == "pdf":
+        print("[5/5] Generando PDF...")
+        from src.pdf_generator import generar_pdf
+        pdf_bytes = generar_pdf(
+            filename=filename,
+            literatura=lit,
+            atomicas=atomicas_guardadas,
+            moc=moc
+        )
+        resultado["pdf_bytes"] = pdf_bytes
+        print(f"✅ PDF generado: {len(pdf_bytes)} bytes")
 
     return resultado
 
 
 def _extract_title(markdown: str) -> str:
-    """Extrae el título # de una nota Markdown."""
     for line in markdown.splitlines():
         if line.startswith("# "):
             return line[2:].strip()
     return ""
 
+
 def _inject_backlink(contenido: str, nota_relacionada: str) -> str:
-    """Añade un backlink extra en la sección Relacionado con."""
     linea = f"- [[{nota_relacionada}]] ← concepto cercano"
     if "## Relacionado con" in contenido:
         return contenido.replace(
@@ -347,53 +368,3 @@ def _inject_backlink(contenido: str, nota_relacionada: str) -> str:
             f"## Relacionado con\n{linea}"
         )
     return contenido + f"\n\n## Relacionado con\n{linea}"
-
-
-# ─────────────────────────────────────────
-# Versión chunked para PDFs largos
-# ─────────────────────────────────────────
-
-def process_document_chunked(
-    pages: list[str],
-    filename: str = "",
-    materia: str = "",
-    save_literatura=None,
-    save_atomica=None,
-    save_moc=None,
-    chunk_size: int = 10
-) -> dict:
-    """
-    Para PDFs largos: procesa por chunks y luego orquesta
-    las tres notas sobre el texto integrado.
-    """
-    chunks_md = []
-    total = (len(pages) - 1) // chunk_size + 1
-
-    for i in range(0, len(pages), chunk_size):
-        chunk = pages[i:i + chunk_size]
-        chunk_text = "\n\n".join(chunk)
-        num = i // chunk_size + 1
-        print(f"   → Chunk {num}/{total}...")
-
-        result = _call_ai(
-            "Extrae el contenido académico de esta sección en Markdown limpio y estructurado.",
-            f"Parte {num}/{total} de {filename}:\n\n{chunk_text}",
-            max_tokens=4096
-        )
-        chunks_md.append(result)
-
-    print("   → Integrando chunks...")
-    integrated = _call_ai(
-        "Integra estas partes en un solo texto académico coherente en Markdown. Elimina duplicados.",
-        "===SEPARADOR===".join(chunks_md),
-        max_tokens=8096
-    )
-
-    return process_document(
-        raw_text=integrated,
-        filename=filename,
-        materia=materia,
-        save_literatura=save_literatura,
-        save_atomica=save_atomica,
-        save_moc=save_moc
-    )
