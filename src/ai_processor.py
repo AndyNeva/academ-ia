@@ -12,7 +12,7 @@ client = OpenAI(
 )
 
 # Modelos en orden de preferencia — si el primero falla por rate limit, prueba el siguiente
-MODEL = "deepseek/deepseek-v4-pro"
+MODEL = "nvidia/nemotron-3-nano-30b-a3b:free"
 
 # ─────────────────────────────────────────
 # SYSTEM PROMPTS
