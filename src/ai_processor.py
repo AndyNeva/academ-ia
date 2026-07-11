@@ -12,7 +12,7 @@ client = OpenAI(
 )
 
 # Modelos en orden de preferencia — si el primero falla por rate limit, prueba el siguiente
-MODEL = "openai/gpt-oss-20b:free"
+MODEL = "poolside/laguna-xs-2.1:free"
 
 # ─────────────────────────────────────────
 # SYSTEM PROMPTS
