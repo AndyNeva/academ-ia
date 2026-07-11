@@ -8,11 +8,19 @@ from src.markdown_cleaner import limpiar_markdown
 load_dotenv()
 MINERU_TOKEN = os.getenv("MINERU_API_KEY")
 BASE_URL = "https://mineru.net/api/v4"
+
+# Timeouts (segundos) — ajusta si tus PDFs son muy pesados
+TIMEOUT_REQUEST = 20      # llamadas cortas: pedir URL, consultar estado
+TIMEOUT_UPLOAD = 120      # subir el PDF puede pesar más
+TIMEOUT_DOWNLOAD = 60     # descargar el zip de resultado
+
+
 def _get_headers():
     return {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {os.getenv('MINERU_API_KEY')}"
     }
+
 
 def extract_pdf(ruta_pdf: str) -> str:
     """
@@ -23,6 +31,7 @@ def extract_pdf(ruta_pdf: str) -> str:
     pdf_bytes = ruta.read_bytes()
     return extract_pdf_from_bytes(pdf_bytes, ruta.name)
 
+
 def extract_pdf_from_bytes(pdf_bytes: bytes, filename: str) -> str:
     """
     Extrae Markdown desde bytes de un PDF usando la API v4 de MinerU con token.
@@ -31,18 +40,28 @@ def extract_pdf_from_bytes(pdf_bytes: bytes, filename: str) -> str:
     print(f"[MinerU] Obteniendo URL de subida para: {filename}")
 
     # 1. Pedir URL firmada de subida
-    resp = requests.post(
-        f"{BASE_URL}/file-urls/batch",
-        headers=_get_headers(),
-        json={
-            "files": [{"name": filename, "data_id": filename}],
-            "model_version": "vlm",
-            "language": "es",
-            "enable_table": True,
-            "is_ocr": True,
-            "enable_formula": True
-        }
-    )
+    try:
+        resp = requests.post(
+            f"{BASE_URL}/file-urls/batch",
+            headers=_get_headers(),
+            json={
+                "files": [{"name": filename, "data_id": filename}],
+                "model_version": "vlm",
+                "language": "es",
+                "enable_table": True,
+                "is_ocr": True,
+                "enable_formula": True
+            },
+            timeout=TIMEOUT_REQUEST
+        )
+    except requests.exceptions.Timeout:
+        raise RuntimeError(
+            f"MinerU no respondió en {TIMEOUT_REQUEST}s al pedir URL de subida. "
+            "El servicio puede estar caído o lento ahora mismo."
+        )
+    except requests.exceptions.ConnectionError as e:
+        raise RuntimeError(f"No se pudo conectar con MinerU: {e}")
+
     resp.raise_for_status()
     result = resp.json()
 
@@ -54,7 +73,11 @@ def extract_pdf_from_bytes(pdf_bytes: bytes, filename: str) -> str:
     print(f"[MinerU] batch_id: {batch_id}")
 
     # 2. Subir el PDF por PUT (sin Content-Type según la doc)
-    put_resp = requests.put(upload_url, data=pdf_bytes)
+    try:
+        put_resp = requests.put(upload_url, data=pdf_bytes, timeout=TIMEOUT_UPLOAD)
+    except requests.exceptions.Timeout:
+        raise RuntimeError(f"MinerU no respondió en {TIMEOUT_UPLOAD}s al subir el archivo.")
+
     if put_resp.status_code not in (200, 201):
         raise RuntimeError(f"MinerU fallo al subir: HTTP {put_resp.status_code}")
     print("[MinerU] Archivo subido, esperando resultado...")
@@ -71,14 +94,31 @@ def _poll_batch(batch_id: str, timeout: int = 300, interval: int = 5) -> str:
         "converting": "convirtiendo"
     }
     inicio = time.time()
+    errores_consecutivos = 0
+    MAX_ERRORES_CONSECUTIVOS = 5  # si falla 5 veces seguidas, abortamos aunque quede presupuesto
 
     while time.time() - inicio < timeout:
-        resp = requests.get(
-            f"{BASE_URL}/extract-results/batch/{batch_id}",
-            headers=_get_headers()
-        )
-        resp.raise_for_status()
-        resultados = resp.json()["data"]["extract_result"]
+        try:
+            resp = requests.get(
+                f"{BASE_URL}/extract-results/batch/{batch_id}",
+                headers=_get_headers(),
+                timeout=TIMEOUT_REQUEST  # ← clave: esto evita el cuelgue indefinido
+            )
+            resp.raise_for_status()
+            resultados = resp.json()["data"]["extract_result"]
+            errores_consecutivos = 0  # reset si esta llamada sí funcionó
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            errores_consecutivos += 1
+            elapsed = int(time.time() - inicio)
+            print(f"[MinerU] [{elapsed}s] ⚠️ Sin respuesta ({errores_consecutivos}/{MAX_ERRORES_CONSECUTIVOS}): {e}")
+            if errores_consecutivos >= MAX_ERRORES_CONSECUTIVOS:
+                raise RuntimeError(
+                    f"MinerU dejó de responder tras {errores_consecutivos} intentos seguidos. "
+                    "El servicio probablemente está caído."
+                )
+            time.sleep(interval)
+            continue
+
         tarea = resultados[0]
         estado = tarea["state"]
         elapsed = int(time.time() - inicio)
@@ -102,7 +142,10 @@ def _extraer_md_del_zip(zip_url: str) -> str:
     import zipfile
     import io
 
-    resp = requests.get(zip_url)
+    try:
+        resp = requests.get(zip_url, timeout=TIMEOUT_DOWNLOAD)
+    except requests.exceptions.Timeout:
+        raise RuntimeError(f"Timeout descargando el resultado de MinerU ({TIMEOUT_DOWNLOAD}s).")
     resp.raise_for_status()
 
     with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
@@ -111,6 +154,7 @@ def _extraer_md_del_zip(zip_url: str) -> str:
             contenido_raw = f.read().decode("utf-8")
 
     return limpiar_markdown(contenido_raw)
+
 
 def extraer_titulo(contenido: str, fallback: str) -> str:
     """
@@ -125,6 +169,7 @@ def extraer_titulo(contenido: str, fallback: str) -> str:
             if titulo:
                 return titulo
     return fallback
+
 
 # Prueba
 if __name__ == "__main__":
