@@ -15,7 +15,8 @@ from src.ai_processor import process_document
 from src.obsidian_exporter import (
     guardar_fuente, set_ws_manager, init_db, eliminar_del_indice
 )
-from src.doc_extracter import extract_file, extraer_titulo
+from src.doc_extracter import extract_file
+from src.pdf_extracter import extraer_titulo
 
 load_dotenv()
 
