@@ -132,12 +132,12 @@ async def process_file_endpoint(
 
     try:
         file_bytes = await file.read()
-        nombre = Path(file.filename).stem
-        print(f"📄 Procesando {ext.upper()}: {nombre} → destino: {destino}")
+        print(f"📄 Procesando {ext.upper()}: {file.filename} → destino: {destino}")
 
         # 1. Extraer texto según el formato
         print("1/4 Extrayendo contenido...")
-        contenido_crudo = extract_file(file_bytes, file.filename)
+        contenido_crudo, nombre = extract_file(file_bytes, file.filename)
+        print(f"📌 Título extraído: {nombre}")
 
         # 2. Guardar fuente raw (solo si va a Obsidian)
         if destino == "obsidian":

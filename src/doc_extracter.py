@@ -59,17 +59,21 @@ def extract_docx(file_bytes: bytes, filename: str) -> str:
     return resultado
 
 
-def extract_file(file_bytes: bytes, filename: str) -> str:
+def extract_file(file_bytes: bytes, filename: str) -> tuple[str, str]:
     """
     Router principal: detecta el tipo de archivo y llama al extractor correcto.
-    Para PDF usa MinerU API (pdf_extracter.py).
+    Para PDF usa MinerU API (pdf_extracter.py), que además extrae el título
+    real del documento desde el primer encabezado H1.
+
+    Devuelve una tupla (contenido, titulo). Para PPTX/DOCX el título es
+    simplemente el nombre del archivo sin extensión.
     """
     ext = Path(filename).suffix.lower()
 
     if ext == ".pptx":
-        return extract_pptx(file_bytes, filename)
+        return extract_pptx(file_bytes, filename), Path(filename).stem
     elif ext == ".docx":
-        return extract_docx(file_bytes, filename)
+        return extract_docx(file_bytes, filename), Path(filename).stem
     elif ext == ".pdf":
         from src.pdf_extracter import extract_pdf_from_bytes
         return extract_pdf_from_bytes(file_bytes, filename)

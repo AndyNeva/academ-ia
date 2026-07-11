@@ -1,4 +1,5 @@
 import os
+import re
 from dotenv import load_dotenv
 import time
 import requests
@@ -14,6 +15,22 @@ def _get_headers():
         "Authorization": f"Bearer {os.getenv('MINERU_API_KEY')}"
     }
 
+
+def extract_title_from_markdown(markdown: str) -> str:
+    """
+    Busca el primer encabezado H1 (`# Título`) en el Markdown extraído
+    y devuelve su texto. Si no encuentra ninguno, devuelve una cadena vacía.
+    """
+    if not markdown:
+        return ""
+
+    match = re.search(r"^#\s+(.+?)\s*$", markdown, re.MULTILINE)
+    if match:
+        return match.group(1).strip()
+
+    return ""
+
+
 def extract_pdf(ruta_pdf: str) -> str:
     """
     Extrae el contenido de un PDF a Markdown usando la API v4 de MinerU.
@@ -23,10 +40,14 @@ def extract_pdf(ruta_pdf: str) -> str:
     pdf_bytes = ruta.read_bytes()
     return extract_pdf_from_bytes(pdf_bytes, ruta.name)
 
-def extract_pdf_from_bytes(pdf_bytes: bytes, filename: str) -> str:
+def extract_pdf_from_bytes(pdf_bytes: bytes, filename: str) -> tuple[str, str]:
     """
     Extrae Markdown desde bytes de un PDF usando la API v4 de MinerU con token.
     Flujo: obtener URL firmada → subir PDF → polling → descargar MD
+
+    Devuelve una tupla (contenido, titulo). El título se extrae del primer
+    encabezado H1 del Markdown; si no existe, se usa el nombre del archivo
+    (sin extensión) como fallback.
     """
     print(f"[MinerU] Obteniendo URL de subida para: {filename}")
 
@@ -60,7 +81,14 @@ def extract_pdf_from_bytes(pdf_bytes: bytes, filename: str) -> str:
     print("[MinerU] Archivo subido, esperando resultado...")
 
     # 3. Polling por batch
-    return _poll_batch(batch_id)
+    contenido = _poll_batch(batch_id)
+
+    # 4. Extraer título del H1, con fallback al nombre del archivo
+    titulo = extract_title_from_markdown(contenido)
+    if not titulo:
+        titulo = Path(filename).stem
+
+    return contenido, titulo
 
 
 def _poll_batch(batch_id: str, timeout: int = 300, interval: int = 5) -> str:
@@ -115,5 +143,6 @@ def _extraer_md_del_zip(zip_url: str) -> str:
 
 # Prueba
 if __name__ == "__main__":
-    contenido = extract_pdf("data/pdfs/DE_U2_T1.pdf")
+    contenido, titulo = extract_pdf("data/pdfs/DE_U2_T1.pdf")
+    print(f"Título: {titulo}")
     print(contenido[:500])
