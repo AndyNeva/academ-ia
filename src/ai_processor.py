@@ -44,11 +44,6 @@ CUERPO:
 ## Resumen general
 3-5 párrafos que describan de qué trata el documento, su propósito y contexto.
 
-## Conceptos extraídos
-Lista de los conceptos clave encontrados, como backlinks para Obsidian:
-- [[Concepto 1]]
-- [[Concepto 2]]
-
 ## Observaciones
 Espacio para contexto adicional: por qué es relevante, limitaciones, etc.
 
@@ -98,8 +93,11 @@ REGLAS:
 
 PROMPT_MOC = """
 Eres un experto en organización de conocimiento académico (método Zettelkasten).
-Tu tarea es generar o ACTUALIZAR un MOC (Map of Content) a partir de los conceptos
-extraídos de un documento académico.
+Tu tarea es generar o ACTUALIZAR un MOC (Map of Content) que organice, en forma de ruta
+de aprendizaje, un conjunto de notas atómicas YA EXISTENTES en la base de conocimiento del usuario.
+
+IMPORTANTE: No inventes conceptos nuevos. Usa EXCLUSIVAMENTE los nombres de notas atómicas
+que se te proporcionan en la lista. No agregues ningún concepto que no esté en esa lista.
 
 Un MOC es una nota de navegación: no contiene conocimiento nuevo, solo organiza y conecta.
 
@@ -116,20 +114,22 @@ created: {{fecha_hoy}}
 ## Descripción
 Una o dos oraciones explicando de qué trata este mapa de conocimiento.
 
-## Conceptos fundamentales
+## Ruta de aprendizaje
+
+### Conceptos fundamentales
 - [[Concepto base 1]]
 - [[Concepto base 2]]
 
-## Conceptos avanzados
+### Conceptos avanzados
 - [[Concepto avanzado 1]]
 
 ## Documentos fuente
 - [[Nota de literatura 1]]
-- [[Nota de literatura 2]]
 
 REGLAS:
-- Agrupa los conceptos por nivel de complejidad o subtema
-- Usa SOLO [[backlinks]], sin explicar el contenido de cada nota
+- Usa ÚNICAMENTE los conceptos de la lista proporcionada, ninguno inventado
+- Agrupa los conceptos por nivel de complejidad o dependencia lógica (qué debería aprenderse antes)
+- Usa SOLO [[backlinks]] con los nombres EXACTOS que se te dieron, sin explicar el contenido de cada nota
 - Este archivo es un índice, no un resumen
 - Responde ÚNICAMENTE con el Markdown, sin explicaciones adicionales
 """
@@ -197,13 +197,14 @@ def generate_atomicas(raw_text: str, filename: str = "") -> list[str]:
     return notas
 
 
-def generate_moc(raw_text: str, filename: str = "", materia: str = "") -> str:
+def generate_moc(conceptos: list[str], filename: str = "", materia: str = "") -> str:
+    conceptos_txt = "\n".join(f"- {c}" for c in conceptos) if conceptos else "(sin notas atómicas disponibles)"
     user_prompt = f"""Genera el MOC para la materia: {materia or 'inferida del documento'}
 Documento fuente: {filename}
 
---- TEXTO EXTRAÍDO ---
-{raw_text}
---- FIN DEL TEXTO ---"""
+--- NOTAS ATÓMICAS DISPONIBLES (usa solo estas, no inventes otras) ---
+{conceptos_txt}
+--- FIN DE LA LISTA ---"""
     return _call_ai(PROMPT_MOC, user_prompt)
 
 
@@ -316,9 +317,11 @@ async def process_document(
                 if destino == "obsidian":
                     await guardar_atomica(contenido, nombre, filename, cliente_id)
 
-    # 4. MOC
+    # 4. MOC — construido SOLO con notas atómicas reales (existentes + nuevas de este documento)
     print(f"[4/4] Generando MOC...")
-    moc = generate_moc(raw_text, filename, materia)
+    nombres_existentes = [n["nombre"] for n in notas_existentes]
+    conceptos_para_moc = list(dict.fromkeys(nombres_existentes + resultado["atomicas"]))
+    moc = generate_moc(conceptos_para_moc, filename, materia)
     resultado["moc"] = moc
 
     if destino == "obsidian":

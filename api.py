@@ -15,6 +15,7 @@ from src.ai_processor import process_document
 from src.obsidian_exporter import (
     guardar_fuente, set_ws_manager, init_db, eliminar_del_indice
 )
+from src.doc_extracter import extract_file, extraer_titulo
 
 load_dotenv()
 
@@ -132,12 +133,17 @@ async def process_file_endpoint(
 
     try:
         file_bytes = await file.read()
-        nombre = Path(file.filename).stem
-        print(f"📄 Procesando {ext.upper()}: {nombre} → destino: {destino}")
+        nombre_archivo = Path(file.filename).stem
+        print(f"📄 Procesando {ext.upper()}: {nombre_archivo} → destino: {destino}")
 
         # 1. Extraer texto según el formato
         print("1/4 Extrayendo contenido...")
         contenido_crudo = extract_file(file_bytes, file.filename)
+
+        # Usar el título real encontrado dentro del documento,
+        # en vez del nombre del archivo, para el resto del flujo
+        nombre = extraer_titulo(contenido_crudo, fallback=nombre_archivo)
+        print(f"📌 Título detectado: {nombre}")
 
         # 2. Guardar fuente raw (solo si va a Obsidian)
         if destino == "obsidian":

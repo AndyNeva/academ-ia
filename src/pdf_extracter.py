@@ -112,6 +112,19 @@ def _extraer_md_del_zip(zip_url: str) -> str:
 
     return limpiar_markdown(contenido_raw)
 
+def extraer_titulo(contenido: str, fallback: str) -> str:
+    """
+    Busca el primer encabezado H1 (# ) dentro del contenido ya extraído
+    del documento y lo usa como título real. Si no encuentra ninguno,
+    devuelve el fallback (normalmente el nombre del archivo sin extensión).
+    """
+    for linea in contenido.splitlines():
+        linea = linea.strip()
+        if linea.startswith("# "):
+            titulo = linea[2:].strip()
+            if titulo:
+                return titulo
+    return fallback
 
 # Prueba
 if __name__ == "__main__":

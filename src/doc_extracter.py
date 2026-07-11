@@ -14,6 +14,13 @@ def extract_pptx(file_bytes: bytes, filename: str) -> str:
     prs = Presentation(io.BytesIO(file_bytes))
     slides_text = []
 
+    # Detectar título real: el placeholder de título de la primera diapositiva
+    titulo_detectado = None
+    if len(prs.slides) > 0:
+        primera_slide = prs.slides[0]
+        if primera_slide.shapes.title and primera_slide.shapes.title.text.strip():
+            titulo_detectado = primera_slide.shapes.title.text.strip()
+
     for i, slide in enumerate(prs.slides, 1):
         texts = []
         for shape in slide.shapes:
@@ -27,7 +34,8 @@ def extract_pptx(file_bytes: bytes, filename: str) -> str:
         if texts:
             slides_text.append(f"## Diapositiva {i}\n\n" + "\n".join(texts))
 
-    resultado = f"# {Path(filename).stem}\n\n" + "\n\n".join(slides_text)
+    titulo_final = titulo_detectado or Path(filename).stem
+    resultado = f"# {titulo_final}\n\n" + "\n\n".join(slides_text)
     print(f"[PPTX] ✅ Extraídas {len(prs.slides)} diapositivas de {filename}")
     return resultado
 
@@ -39,12 +47,20 @@ def extract_docx(file_bytes: bytes, filename: str) -> str:
 
     doc = Document(io.BytesIO(file_bytes))
     parrafos = []
+    titulo_detectado = None
 
     for para in doc.paragraphs:
         texto = para.text.strip()
         if not texto:
             continue
-        # Detectar headings
+
+        # Detectar el título real: estilo "Title" o el primer "Heading 1"
+        if titulo_detectado is None and (
+            para.style.name.startswith("Title") or para.style.name.startswith("Heading 1")
+        ):
+            titulo_detectado = texto
+            continue  # no lo dupliquemos también como encabezado en el cuerpo
+
         if para.style.name.startswith("Heading 1"):
             parrafos.append(f"# {texto}")
         elif para.style.name.startswith("Heading 2"):
@@ -54,7 +70,8 @@ def extract_docx(file_bytes: bytes, filename: str) -> str:
         else:
             parrafos.append(texto)
 
-    resultado = f"# {Path(filename).stem}\n\n" + "\n\n".join(parrafos)
+    titulo_final = titulo_detectado or Path(filename).stem
+    resultado = f"# {titulo_final}\n\n" + "\n\n".join(parrafos)
     print(f"[DOCX] ✅ Extraídos {len(doc.paragraphs)} párrafos de {filename}")
     return resultado
 
