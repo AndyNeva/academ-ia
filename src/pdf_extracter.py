@@ -118,6 +118,9 @@ def extraer_titulo(contenido: str, fallback: str) -> str:
     del documento y lo usa como título real. Si no encuentra ninguno,
     devuelve el fallback (normalmente el nombre del archivo sin extensión).
     """
+    if not contenido:
+        return fallback
+
     for linea in contenido.splitlines():
         linea = linea.strip()
         if linea.startswith("# "):

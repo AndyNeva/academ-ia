@@ -80,15 +80,28 @@ def extract_file(file_bytes: bytes, filename: str) -> str:
     """
     Router principal: detecta el tipo de archivo y llama al extractor correcto.
     Para PDF usa MinerU API (pdf_extracter.py).
+    Nunca retorna None: si un extractor falla o devuelve vacío, se lanza un error.
     """
     ext = Path(filename).suffix.lower()
 
-    if ext == ".pptx":
-        return extract_pptx(file_bytes, filename)
-    elif ext == ".docx":
-        return extract_docx(file_bytes, filename)
-    elif ext == ".pdf":
-        from src.pdf_extracter import extract_pdf_from_bytes
-        return extract_pdf_from_bytes(file_bytes, filename)
-    else:
-        raise ValueError(f"Formato no soportado: {ext}. Usa PDF, PPTX o DOCX.")
+    try:
+        if ext == ".pptx":
+            resultado = extract_pptx(file_bytes, filename)
+        elif ext == ".docx":
+            resultado = extract_docx(file_bytes, filename)
+        elif ext == ".pdf":
+            from src.pdf_extracter import extract_pdf_from_bytes
+            resultado = extract_pdf_from_bytes(file_bytes, filename)
+        else:
+            raise ValueError(f"Formato no soportado: {ext}. Usa PDF, PPTX o DOCX.")
+    except ValueError:
+        raise
+    except Exception as e:
+        raise RuntimeError(f"Error al extraer contenido de {filename}: {e}") from e
+
+    if not resultado or not resultado.strip():
+        raise RuntimeError(
+            f"La extracción de {filename} no produjo contenido (resultado vacío o None)."
+        )
+
+    return resultado

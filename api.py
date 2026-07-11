@@ -139,7 +139,20 @@ async def process_file_endpoint(
 
         # 1. Extraer texto según el formato
         print("1/4 Extrayendo contenido...")
-        contenido_crudo = extract_file(file_bytes, file.filename)
+        try:
+            contenido_crudo = extract_file(file_bytes, file.filename)
+        except Exception as e:
+            print(f"❌ Error extrayendo contenido de {file.filename}: {e}")
+            raise HTTPException(
+                status_code=422,
+                detail=f"No se pudo extraer contenido del archivo: {e}"
+            )
+
+        if not contenido_crudo:
+            raise HTTPException(
+                status_code=422,
+                detail=f"La extracción de {file.filename} no produjo contenido."
+            )
 
         # Usar el título real encontrado dentro del documento,
         # en vez del nombre del archivo, para el resto del flujo
@@ -188,6 +201,8 @@ async def process_file_endpoint(
             "mensaje": "Documento procesado correctamente"
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"❌ Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
