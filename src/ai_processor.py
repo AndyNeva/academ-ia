@@ -7,12 +7,11 @@ from src.obsidian_exporter import guardar_literatura, guardar_atomica, guardar_m
 load_dotenv()
 
 client = OpenAI(
-    api_key=os.getenv("OPENROUTER_API_KEY"),
-    base_url="https://openrouter.ai/api/v1"
+    api_key=os.getenv("OPENAI_API_KEY")
 )
 
-# Modelos en orden de preferencia — si el primero falla por rate limit, prueba el siguiente
-MODEL = "poolside/laguna-xs-2.1:free"
+# Modelo
+MODEL = MODEL = "gpt-4o"
 
 # ─────────────────────────────────────────
 # SYSTEM PROMPTS
