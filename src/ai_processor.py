@@ -12,7 +12,7 @@ client = OpenAI(
 )
 
 # Modelos en orden de preferencia — si el primero falla por rate limit, prueba el siguiente
-MODEL = "openai/gpt-oss-20b:free"
+MODEL = "google/gemma-4-26b-a4b-it:free"
 
 # ─────────────────────────────────────────
 # SYSTEM PROMPTS
