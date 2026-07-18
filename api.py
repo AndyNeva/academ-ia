@@ -13,7 +13,8 @@ import uvicorn
 from src.doc_extracter import extract_file
 from src.ai_processor import process_document
 from src.obsidian_exporter import (
-    guardar_fuente, set_ws_manager, init_db, eliminar_del_indice
+    guardar_fuente, set_ws_manager, init_db, eliminar_del_indice,
+    get_modo, set_modo
 )
 from src.doc_extracter import extract_file
 from src.pdf_extracter import extraer_titulo
@@ -97,6 +98,44 @@ def validar_token(token: str) -> bool:
 async def health_check():
     return {"status": "ok", "timestamp": datetime.now().isoformat()}
 
+
+@app.get("/modo")
+async def obtener_modo(
+    token: str = Query(None),
+    cliente_id: str = Query(None)
+):
+    """Devuelve el modo guardado del usuario ('pdf' u 'obsidian')."""
+    if not validar_token(token):
+        raise HTTPException(status_code=401, detail="Token inválido")
+    if not cliente_id:
+        raise HTTPException(status_code=400, detail="cliente_id requerido")
+
+    try:
+        modo = get_modo(cliente_id)
+        return {"chatId": cliente_id, "modo": modo}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/modo")
+async def guardar_modo(
+    token: str = Query(None),
+    cliente_id: str = Query(None),
+    modo: str = Query(None)
+):
+    """Guarda el modo elegido por el usuario."""
+    if not validar_token(token):
+        raise HTTPException(status_code=401, detail="Token inválido")
+    if not cliente_id:
+        raise HTTPException(status_code=400, detail="cliente_id requerido")
+    if modo not in ("pdf", "obsidian"):
+        raise HTTPException(status_code=400, detail=f"Modo inválido: {modo}. Debe ser 'pdf' o 'obsidian'")
+
+    try:
+        set_modo(cliente_id, modo)
+        return {"chatId": cliente_id, "modo": modo}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/process_pdf")
 async def process_file_endpoint(
