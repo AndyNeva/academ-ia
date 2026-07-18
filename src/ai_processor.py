@@ -364,7 +364,15 @@ async def process_document(
 
     # 3. Resolver duplicados
     print(f"[3/4] Resolviendo duplicados semánticos...")
-    notas_existentes = get_notas_existentes(cliente_id)
+    if destino == "obsidian":
+        notas_existentes = get_notas_existentes(cliente_id)
+    else:
+        # destino == "pdf": el PDF no tiene un vault compartido donde el usuario
+        # pueda encontrar notas atómicas creadas en el pasado, así que no hay
+        # "duplicados" que resolver contra nada — todo se genera como si
+        # ningún concepto existiera previamente.
+        print("   (destino=pdf: se ignora la base de atómicas existentes, todo se trata como nuevo)")
+        notas_existentes = []
     decisiones = resolver_duplicados(conceptos_nuevos, notas_existentes)
     notas_por_nombre = {_extract_title(n): n for n in atomicas}
     atomicas_guardadas = []
