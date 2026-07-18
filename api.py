@@ -11,13 +11,12 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from src.doc_extracter import extract_file
-from src.ai_processor import process_document
+from src.ai_processor import process_document, extraer_tema_principal
 from src.obsidian_exporter import (
     guardar_fuente, set_ws_manager, init_db, eliminar_del_indice,
     get_modo, set_modo
 )
 from src.doc_extracter import extract_file
-from src.pdf_extracter import extraer_titulo
 
 load_dotenv()
 
@@ -182,7 +181,7 @@ async def process_file_endpoint(
 
         # Usar el título real encontrado dentro del documento,
         # en vez del nombre del archivo, para el resto del flujo
-        nombre = extraer_titulo(contenido_crudo, fallback=nombre_archivo)
+        nombre = extraer_tema_principal(contenido_crudo, fallback=nombre_archivo)
         print(f"📌 Título detectado: {nombre}")
 
         # 2. Guardar fuente raw (solo si va a Obsidian)

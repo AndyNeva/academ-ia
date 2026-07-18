@@ -180,6 +180,18 @@ Responde ÚNICAMENTE en JSON con esta estructura:
 ]
 """
 
+PROMPT_TITULO = """
+Identifica el título o tema principal de un documento académico a partir del texto extraído.
+
+Reglas:
+- Si el documento tiene un título explícito (portada, encabezado principal), úsalo tal cual.
+- Si es una clase, capítulo o presentación sobre un tema concreto sin título explícito,
+  usa ese tema como título (ej. "Desarrollo del Lenguaje en la Primera Infancia").
+- Responde ÚNICAMENTE con el título en una sola línea, sin comillas, sin explicaciones,
+  sin Markdown, sin puntos finales.
+- Si de verdad no puedes determinar un título razonable, responde exactamente: SIN_TITULO
+"""
+
 # ─────────────────────────────────────────
 # Helper central con fallback de modelos
 # ─────────────────────────────────────────
@@ -314,6 +326,37 @@ Devuelve el JSON de decisiones."""
     raw = _call_ai(PROMPT_RESOLVER_DUPLICADOS, user_prompt, max_tokens=8192)
     clean = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     return json.loads(clean)
+
+def extraer_tema_principal(raw_text: str, fallback: str) -> str:
+    """
+    Usa la IA para determinar el título/tema principal de un documento,
+    en vez de depender solo de heurísticas de encabezados Markdown.
+    Si la IA falla o no da una respuesta usable, retorna el fallback
+    (normalmente el nombre del archivo).
+    """
+    fragmento = raw_text[:6000]  # con el inicio del documento basta, no hace falta mandarlo completo
+    user_prompt = f"--- TEXTO EXTRAÍDO ---\n{fragmento}\n--- FIN DEL TEXTO ---"
+
+    try:
+        resultado = _call_ai(PROMPT_TITULO, user_prompt, max_tokens=500)
+    except Exception as e:
+        print(f"⚠️ extraer_tema_principal: error llamando IA ({e}), usando fallback: {fallback}")
+        return fallback
+
+    if not resultado:
+        print(f"⚠️ extraer_tema_principal: respuesta vacía, usando fallback: {fallback}")
+        return fallback
+
+    titulo = resultado.strip().strip('"').strip("'").strip()
+
+    if not titulo or titulo.upper() == "SIN_TITULO":
+        return fallback
+
+    # Límite defensivo por si el modelo se extiende más de lo pedido
+    if len(titulo) > 120:
+        titulo = titulo[:120].rsplit(" ", 1)[0]
+
+    return titulo
 
 # ─────────────────────────────────────────
 # Orquestador principal
