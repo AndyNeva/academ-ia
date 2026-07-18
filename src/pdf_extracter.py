@@ -2,6 +2,7 @@ import os
 from dotenv import load_dotenv
 import time
 import requests
+import re
 from pathlib import Path
 from src.markdown_cleaner import limpiar_markdown
 
@@ -14,6 +15,7 @@ TIMEOUT_REQUEST = 20      # llamadas cortas: pedir URL, consultar estado
 TIMEOUT_UPLOAD = 120      # subir el PDF puede pesar más
 TIMEOUT_DOWNLOAD = 60     # descargar el zip de resultado
 
+_RE_ATX = re.compile(r'^(#{1,6})\s*(.+?)\s*#*$')
 
 def _get_headers():
     return {
@@ -158,16 +160,61 @@ def _extraer_md_del_zip(zip_url: str) -> str:
 
 def extraer_titulo(contenido: str, fallback: str) -> str:
     """
-    Busca el primer encabezado H1 (# ) dentro del contenido ya extraído
-    del documento y lo usa como título real. Si no encuentra ninguno,
-    devuelve el fallback (normalmente el nombre del archivo sin extensión).
+    Busca el título dentro del contenido ya extraído del documento.
+    Soporta:
+      - Encabezados ATX ('#', '##'...), con o sin espacio tras el '#'
+      - Encabezados Setext ('Título' seguido de una línea de '===' o '---')
+      - Frontmatter YAML inicial (se ignora al buscar)
+    Prioriza el primer H1 encontrado; si no hay ninguno, usa el mejor
+    nivel disponible (H2, H3...). Si no encuentra nada razonable, devuelve
+    el fallback (normalmente el nombre del archivo sin extensión).
     """
-    for linea in contenido.splitlines():
-        linea = linea.strip()
-        if linea.startswith("# "):
-            titulo = linea[2:].strip()
-            if titulo:
-                return titulo
+    lineas = contenido.splitlines()
+
+    inicio = 0
+    if lineas and lineas[0].strip() == "---":
+        for i in range(1, len(lineas)):
+            if lineas[i].strip() == "---":
+                inicio = i + 1
+                break
+
+    mejor_por_nivel: dict = {}
+
+    i = inicio
+    while i < len(lineas):
+        if 1 in mejor_por_nivel:
+            break
+
+        linea = lineas[i].strip()
+        if not linea:
+            i += 1
+            continue
+
+        match = _RE_ATX.match(linea)
+        if match:
+            nivel = len(match.group(1))
+            texto = match.group(2).strip()
+            if texto and nivel not in mejor_por_nivel:
+                mejor_por_nivel[nivel] = texto
+            i += 1
+            continue
+
+        if i + 1 < len(lineas):
+            siguiente = lineas[i + 1].strip()
+            if siguiente and set(siguiente) == {"="} and len(siguiente) >= 3:
+                mejor_por_nivel.setdefault(1, linea)
+                i += 2
+                continue
+            if siguiente and set(siguiente) == {"-"} and len(siguiente) >= 3 and "|" not in linea:
+                mejor_por_nivel.setdefault(2, linea)
+                i += 2
+                continue
+
+        i += 1
+
+    for nivel in sorted(mejor_por_nivel):
+        return mejor_por_nivel[nivel]
+
     return fallback
 
 
