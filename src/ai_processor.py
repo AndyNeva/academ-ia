@@ -311,7 +311,7 @@ CONCEPTOS NUEVOS A EVALUAR:
 
 Devuelve el JSON de decisiones."""
 
-    raw = _call_ai(PROMPT_RESOLVER_DUPLICADOS, user_prompt, max_tokens=2048)
+    raw = _call_ai(PROMPT_RESOLVER_DUPLICADOS, user_prompt, max_tokens=8192)
     clean = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     return json.loads(clean)
 
