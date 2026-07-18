@@ -48,7 +48,7 @@ def extract_pdf_from_bytes(pdf_bytes: bytes, filename: str) -> str:
             headers=_get_headers(),
             json={
                 "files": [{"name": filename, "data_id": filename}],
-                "model_version": "vlm",
+                "model_version": "pipeline",
                 "language": "es",
                 "enable_table": True,
                 "is_ocr": True,
