@@ -1,5 +1,7 @@
 import os
+import re
 import json
+from datetime import date
 from openai import OpenAI
 from dotenv import load_dotenv
 from src.obsidian_exporter import guardar_literatura, guardar_atomica, guardar_moc, get_notas_existentes
@@ -7,11 +9,15 @@ from src.obsidian_exporter import guardar_literatura, guardar_atomica, guardar_m
 load_dotenv()
 
 client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY")
+    api_key=os.getenv("OPENROUTER_API_KEY"),
+    base_url="https://openrouter.ai/api/v1"
 )
 
-# Modelo
-MODEL = MODEL = "gpt-4o"
+# Modelo usado para generar las notas.
+# NOTA: si MODEL es un modelo de razonamiento (o3, o4-mini, o1, etc.),
+# la Chat Completions API exige `max_completion_tokens` en vez de `max_tokens`
+# (ya aplicado en _call_ai más abajo).
+MODEL = "openai/o4-mini"
 
 # ─────────────────────────────────────────
 # SYSTEM PROMPTS
@@ -49,15 +55,19 @@ Espacio para contexto adicional: por qué es relevante, limitaciones, etc.
 REGLAS:
 - No inventes contenido que no esté en el texto
 - Los backlinks deben ser conceptos reales mencionados en el documento
-- Responde ÚNICAMENTE con el Markdown, sin explicaciones adicionales
+- Los tags NUNCA deben tener espacios: usa una sola palabra o varias unidas con guiones
+  (ej. "sistemas-de-unidades", nunca "sistemas de unidades")
+- Responde ÚNICAMENTE con el Markdown, sin explicaciones adicionales, sin envolver
+  la respuesta en bloques de código (nada de ```markdown ni ``` al inicio o final)
 """
 
 PROMPT_ATOMICA = """
 Eres un experto en organización de conocimiento académico (método Zettelkasten).
 Tu tarea es generar NOTAS ATÓMICAS a partir del texto extraído de un documento académico.
 
-Una nota atómica = UN solo concepto, explicado con precisión. Si el texto contiene N conceptos importantes,
-genera N notas separadas. Devuelve todas en un solo bloque, separadas por: ===NOTA===
+Una nota atómica = UN solo concepto, explicado con precisión y en profundidad. Si el texto
+contiene N conceptos importantes, genera N notas separadas. Devuelve todas en un solo bloque,
+separadas por: ===NOTA===
 
 Cada nota atómica sigue esta estructura:
 
@@ -74,7 +84,15 @@ created: {{fecha_hoy}}
 Explicación clara y precisa del concepto en 2-4 oraciones.
 
 ## Desarrollo
-Explicación más amplia, ejemplos, fórmulas si aplica.
+Explicación amplia y detallada: contexto, matices, fórmulas si aplica, cómo se relaciona
+con otros conceptos del mismo documento. Escribe con profundidad, no te limites a una
+o dos oraciones — el objetivo es que la nota sea autosuficiente para entender el concepto
+sin volver al documento original.
+
+## Ejemplo de aplicación
+Un caso concreto (numérico, práctico o de la vida real según el tema) que muestre cómo
+se usa o se manifiesta este concepto. Si el concepto tiene una fórmula, resuélvela con
+números de ejemplo. Si es un concepto teórico, da un caso de uso real.
 
 ## Relacionado con
 - [[Concepto relacionado 1]]
@@ -87,7 +105,12 @@ REGLAS:
 - Máximo un concepto por nota
 - Usa [[backlinks]] para conectar conceptos entre sí
 - Sé preciso: preserva términos técnicos, fórmulas y definiciones exactas
-- Responde ÚNICAMENTE con el Markdown separado por ===NOTA===, sin explicaciones adicionales
+- Las notas deben ser más extensas que una definición de diccionario: incluye matices,
+  contexto y el ejemplo de aplicación pedido arriba
+- Los tags NUNCA deben tener espacios: usa una sola palabra o varias unidas con guiones
+  (ej. "unidad-de-medida", nunca "unidad de medida")
+- Responde ÚNICAMENTE con el Markdown separado por ===NOTA===, sin explicaciones
+  adicionales, sin envolver la respuesta en bloques de código (nada de ```markdown ni ```)
 """
 
 PROMPT_MOC = """
@@ -129,8 +152,10 @@ REGLAS:
 - Usa ÚNICAMENTE los conceptos de la lista proporcionada, ninguno inventado
 - Agrupa los conceptos por nivel de complejidad o dependencia lógica (qué debería aprenderse antes)
 - Usa SOLO [[backlinks]] con los nombres EXACTOS que se te dieron, sin explicar el contenido de cada nota
+- Los tags NUNCA deben tener espacios: usa una sola palabra o varias unidas con guiones
 - Este archivo es un índice, no un resumen
-- Responde ÚNICAMENTE con el Markdown, sin explicaciones adicionales
+- Responde ÚNICAMENTE con el Markdown, sin explicaciones adicionales, sin envolver la
+  respuesta en bloques de código (nada de ```markdown ni ```)
 """
 
 PROMPT_RESOLVER_DUPLICADOS = """
@@ -167,9 +192,64 @@ def _call_ai(system: str, user: str, max_tokens: int = 8096) -> str:
             {"role": "system", "content": system},
             {"role": "user",   "content": user}
         ],
-        max_tokens=max_tokens
+        # Los modelos de razonamiento (o3 / o4-mini / o1) requieren
+        # max_completion_tokens; con Chat Completions "max_tokens" ya no
+        # es válido para ellos.
+        max_completion_tokens=max_tokens
     )
     return response.choices[0].message.content
+
+
+# ─────────────────────────────────────────
+# Post-procesamiento de la respuesta de la IA
+# ─────────────────────────────────────────
+# Estas funciones corrigen por código lo que la IA puede olvidar u
+# obedecer de forma inconsistente: bloques de código sobrantes, fechas
+# y tags con espacios. No dependen de que el modelo "se acuerde".
+
+def _limpiar_respuesta_ia(texto: str) -> str:
+    """Quita fences ```markdown / ``` que el modelo a veces agrega
+    aunque se le pida no hacerlo."""
+    texto = texto.strip()
+    texto = re.sub(r'^```(?:markdown|md)?\s*\n', '', texto)
+    texto = re.sub(r'\n?```\s*$', '', texto)
+    return texto.strip()
+
+
+def _insertar_fecha_real(md: str) -> str:
+    """Reemplaza cualquier valor en la línea 'created:' (incluyendo
+    placeholders sin resolver como {{fecha_hoy}} o fechas inventadas)
+    por la fecha real del sistema."""
+    fecha_hoy = date.today().isoformat()
+
+    if re.search(r'(?m)^created:.*$', md):
+        return re.sub(r'(?m)^created:.*$', f'created: {fecha_hoy}', md)
+
+    # Si no existe línea 'created:' pero sí hay frontmatter, la insertamos
+    if md.lstrip().startswith('---'):
+        return re.sub(r'^---\n', f'---\ncreated: {fecha_hoy}\n', md, count=1)
+
+    return md
+
+
+def _sanitizar_tags(md: str) -> str:
+    """Reemplaza espacios dentro de cada tag por guiones, para que
+    Obsidian no los muestre como tags inválidos/tachados."""
+    def reemplazar(match):
+        contenido = match.group(1)
+        tags = [t.strip().strip('"').strip("'") for t in contenido.split(',') if t.strip()]
+        tags_limpios = [re.sub(r'\s+', '-', t) for t in tags]
+        return f"tags: [{', '.join(tags_limpios)}]"
+
+    return re.sub(r'tags:\s*\[([^\]]*)\]', reemplazar, md)
+
+
+def _post_procesar(md: str) -> str:
+    """Pipeline de limpieza aplicado a toda nota generada por la IA."""
+    md = _limpiar_respuesta_ia(md)
+    md = _insertar_fecha_real(md)
+    md = _sanitizar_tags(md)
+    return md
 
 
 # ─────────────────────────────────────────
@@ -182,7 +262,8 @@ def generate_literatura(raw_text: str, filename: str = "") -> str:
 --- TEXTO EXTRAÍDO ---
 {raw_text}
 --- FIN DEL TEXTO ---"""
-    return _call_ai(PROMPT_LITERATURA, user_prompt)
+    resultado = _call_ai(PROMPT_LITERATURA, user_prompt)
+    return _post_procesar(resultado)
 
 
 def generate_atomicas(raw_text: str, filename: str = "") -> list[str]:
@@ -191,9 +272,11 @@ def generate_atomicas(raw_text: str, filename: str = "") -> list[str]:
 --- TEXTO EXTRAÍDO ---
 {raw_text}
 --- FIN DEL TEXTO ---"""
-    result = _call_ai(PROMPT_ATOMICA, user_prompt)
+    # max_tokens más alto: las notas ahora son más largas (Desarrollo + Ejemplo de aplicación)
+    result = _call_ai(PROMPT_ATOMICA, user_prompt, max_tokens=12288)
+    result = _limpiar_respuesta_ia(result)  # por si envuelve toda la respuesta en un solo bloque
     notas = [n.strip() for n in result.split("===NOTA===") if n.strip()]
-    return notas
+    return [_post_procesar(n) for n in notas]
 
 
 def generate_moc(conceptos: list[str], filename: str = "", materia: str = "") -> str:
@@ -204,7 +287,8 @@ Documento fuente: {filename}
 --- NOTAS ATÓMICAS DISPONIBLES (usa solo estas, no inventes otras) ---
 {conceptos_txt}
 --- FIN DE LA LISTA ---"""
-    return _call_ai(PROMPT_MOC, user_prompt)
+    resultado = _call_ai(PROMPT_MOC, user_prompt)
+    return _post_procesar(resultado)
 
 
 def resolver_duplicados(conceptos_nuevos: list[str], notas_existentes: list[dict]) -> list[dict]:
