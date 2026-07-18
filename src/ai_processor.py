@@ -16,7 +16,7 @@ client = OpenAI(
 # NOTA: si MODEL es un modelo de razonamiento (o3, o4-mini, o1, etc.),
 # la Chat Completions API exige `max_completion_tokens` en vez de `max_tokens`
 # (ya aplicado en _call_ai más abajo).
-MODEL = "openai/o4-mini"
+MODEL = "o4-mini"
 
 # ─────────────────────────────────────────
 # SYSTEM PROMPTS
